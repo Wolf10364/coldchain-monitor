@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ColdChain Monitor</title>
+<style>
+  :root {
+    --bg: #f4f6f8; --panel: #ffffff; --text: #1b1f24; --muted: #66707a; --line: #e3e7eb;
+    --green: #2e7d32; --green-bg: #e7f3e8; --amber: #b26a00; --amber-bg: #fff3dc;
+    --red: #c62828; --red-bg: #fde8e8; --grey: #7a838c; --grey-bg: #eef0f2; --accent: #3557c5;
+    --band: rgba(46, 125, 50, 0.12);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101418; --panel: #181e24; --text: #e6eaee; --muted: #9aa4ad; --line: #2a323a;
+      --green: #66bb6a; --green-bg: #1c3320; --amber: #ffb74d; --amber-bg: #3a2c12;
+      --red: #ef5350; --red-bg: #3d1d1d; --grey: #9aa4ad; --grey-bg: #262d34; --accent: #8ea8ff;
+      --band: rgba(102, 187, 106, 0.14);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+           padding: 20px 24px 8px; }
+  h1 { margin: 0; font-size: 22px; }
+  h1 small { font-weight: 400; color: var(--muted); font-size: 15px; margin-left: 8px; }
+  #status { color: var(--muted); font-size: 13px; }
+  #status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--green);
+                 margin-right: 6px; vertical-align: middle; }
+  #status.error .dot { background: var(--red); }
+  main { padding: 8px 24px 32px; display: grid; gap: 16px; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
+  @media (max-width: 1000px) { main { grid-template-columns: minmax(0, 1fr); } }
+  .kpis { grid-column: 1 / -1; display: grid; gap: 12px; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  @media (max-width: 700px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .kpi, .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  .kpi { padding: 12px 16px; }
+  .kpi .label { color: var(--muted); font-size: 13px; }
+  .kpi .value { font-size: 26px; font-weight: 700; }
+  .panel { padding: 16px; min-width: 0; }
+  .panel h2 { margin: 0 0 12px; font-size: 16px; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--line);
+       white-space: nowrap; }
+  td { padding: 9px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--grey-bg); }
+  tbody tr.selected { background: var(--grey-bg); box-shadow: inset 3px 0 0 var(--accent); }
+  .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 13px; }
+  .temp { font-weight: 700; }
+  .ok { color: var(--green); } .bad { color: var(--red); } .stale { color: var(--grey); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .badge.PASS, .badge.CONNECTED, .badge.online { background: var(--green-bg); color: var(--green); }
+  .badge.FAIL, .badge.LOST, .badge.offline { background: var(--red-bg); color: var(--red); }
+  .badge.INCOMPLETE, .badge.RECONNECTING { background: var(--amber-bg); color: var(--amber); }
+  .badge.SCANNING, .badge.none { background: var(--grey-bg); color: var(--grey); }
+  .empty { color: var(--muted); padding: 24px 8px; }
+  .detail-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .now { font-size: 44px; font-weight: 700; margin: 4px 0 0; }
+  .sub { color: var(--muted); font-size: 13px; }
+  svg { width: 100%; height: auto; display: block; margin: 12px 0; }
+  .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 8px 0 12px; }
+  .stat .label { color: var(--muted); font-size: 12px; }
+  .stat .value { font-weight: 600; }
+  ul.excursions { margin: 0; padding-left: 18px; font-size: 14px; }
+  .note { color: var(--muted); font-size: 13px; margin-top: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ColdChain Monitor <small>Live shipments</small></h1>
+  <div id="status"><span class="dot"></span><span id="status-text">Connecting</span></div>
+</header>
+<main>
+  <section class="kpis" id="kpis"></section>
+  <section class="panel">
+    <h2>Shipments</h2>
+    <div class="table-wrap" id="table"></div>
+  </section>
+  <section class="panel" id="detail"></section>
+</main>
+
+<script>
+"use strict";
+const REFRESH_MS = 2000;
+let selected = null;
+
+// Values from phones go in as text, never as HTML.
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  for (const c of children) if (c != null) node.append(c instanceof Node ? c : String(c));
+  return node;
+}
+
+const fmtC = c => (c == null ? "--" : `${c.toFixed(1)} °C`);
+const fmtTime = iso => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const fmtClock = iso => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+function fmtDuration(seconds) {
+  const m = Math.round(seconds / 60), h = Math.floor(m / 60);
+  return h > 0 ? `${h} h ${m % 60} min` : `${m} min`;
+}
+const rangeText = s => (s.range_min_c == null ? `≤ ${s.range_max_c} °C` : `${s.range_min_c} to ${s.range_max_c} °C`);
+const inRange = (s, c) => c <= s.range_max_c && (s.range_min_c == null || c >= s.range_min_c);
+const isLive = s => s.phone_online && s.connection === "CONNECTED";
+
+function tempClass(s) {
+  if (!s.latest || !isLive(s)) return "stale";
+  return inRange(s, s.latest.celsius) ? "ok" : "bad";
+}
+
+function badge(text, cls = text) { return el("span", { class: `badge ${cls}` }, text); }
+
+function renderKpis(ships) {
+  const count = v => ships.filter(s => s.verdict === v).length;
+  const items = [
+    ["Shipments", ships.length],
+    ["Pass", count("PASS")],
+    ["Fail", count("FAIL")],
+    ["Incomplete", count("INCOMPLETE")],
+    ["Phones offline", ships.filter(s => !s.phone_online).length],
+  ];
+  document.getElementById("kpis").replaceChildren(
+    ...items.map(([label, value]) => el("div", { class: "kpi" }, el("div", { class: "label" }, label), el("div", { class: "value" }, value))));
+}
+
+function renderTable(ships) {
+  const box = document.getElementById("table");
+  if (!ships.length) {
+    box.replaceChildren(el("div", { class: "empty" },
+      "No shipments yet. Start the app on a phone or emulator: it uploads here every 2 seconds."));
+    return;
+  }
+  const head = el("tr", {}, ...["Shipment", "Device", "Now", "Range", "Verdict", "Sensor", "Phone", "Readings"].map(h => el("th", {}, h)));
+  const rows = ships.map(s => el("tr", { class: s.id === selected ? "selected" : "", onclick: () => { selected = s.id; refresh(); } },
+    el("td", { class: "mono" }, s.id),
+    el("td", {}, s.device),
+    el("td", { class: `temp ${tempClass(s)}` }, s.latest ? fmtC(s.latest.celsius) : "--"),
+    el("td", {}, rangeText(s)),
+    el("td", {}, s.verdict ? badge(s.verdict) : badge("none", "none")),
+    el("td", {}, badge(s.connection)),
+    el("td", {}, s.phone_online ? badge("online") : badge(`offline ${fmtDuration(s.seconds_since_seen)}`, "offline")),
+    el("td", {}, s.reading_count)));
+  box.replaceChildren(el("table", {}, el("thead", {}, head), el("tbody", {}, ...rows)));
+}
+
+const SVG = "http://www.w3.org/2000/svg";
+function svg(tag, attrs = {}, text) {
+  const node = document.createElementNS(SVG, tag);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+function chart(d) {
+  const W = 640, H = 220, L = 44, R = 10, T = 10, B = 24;
+  const pts = d.readings.map(r => ({ t: Date.parse(r.time), c: r.celsius }));
+  const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Temperature chart" });
+  if (pts.length < 2) {
+    root.append(svg("text", { x: W / 2, y: H / 2, "text-anchor": "middle", fill: "var(--muted)" }, "Waiting for readings"));
+    return root;
+  }
+  const cs = pts.map(p => p.c);
+  const lo = Math.min(...cs, d.range_min_c ?? Math.min(...cs)) - 1;
+  const hi = Math.max(...cs, d.range_max_c) + 1;
+  const t0 = pts[0].t, t1 = pts[pts.length - 1].t;
+  const x = t => L + (W - L - R) * (t - t0) / (t1 - t0 || 1);
+  const y = c => T + (H - T - B) * (1 - (c - lo) / (hi - lo));
+
+  const bandTop = y(d.range_max_c), bandBottom = d.range_min_c == null ? H - B : y(d.range_min_c);
+  root.append(svg("rect", { x: L, y: bandTop, width: W - L - R, height: bandBottom - bandTop, fill: "var(--band)" }));
+  for (const c of [d.range_max_c, d.range_min_c].filter(v => v != null)) {
+    root.append(svg("line", { x1: L, x2: W - R, y1: y(c), y2: y(c), stroke: "var(--green)", "stroke-dasharray": "4 4", "stroke-width": 1 }));
+    root.append(svg("text", { x: L - 6, y: y(c) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)" }, `${c}°`));
+  }
+  // Break the line where the sensor was silent for more than 10 minutes, so a gap looks like a gap.
+  let path = "";
+  pts.forEach((p, i) => {
+    const jump = i === 0 || p.t - pts[i - 1].t > 10 * 60 * 1000;
+    path += `${jump ? "M" : "L"}${x(p.t).toFixed(1)},${y(p.c).toFixed(1)} `;
+  });
+  root.append(svg("path", { d: path, fill: "none", stroke: "var(--accent)", "stroke-width": 2 }));
+  for (const p of pts) if (!inRange(d, p.c)) root.append(svg("circle", { cx: x(p.t), cy: y(p.c), r: 2.5, fill: "var(--red)" }));
+  root.append(svg("text", { x: L, y: H - 6, "font-size": 11, fill: "var(--muted)" }, fmtClock(d.readings[0].time)));
+  root.append(svg("text", { x: W - R, y: H - 6, "text-anchor": "end", "font-size": 11, fill: "var(--muted)" },
+    fmtClock(d.readings[d.readings.length - 1].time)));
+  return root;
+}
+
+function stat(label, value) {
+  return el("div", { class: "stat" }, el("div", { class: "label" }, label), el("div", { class: "value" }, value));
+}
+
+function renderDetail(d) {
+  const box = document.getElementById("detail");
+  if (!d) {
+    box.replaceChildren(el("h2", {}, "Details"), el("div", { class: "empty" }, "Select a shipment."));
+    return;
+  }
+  const r = d.report;
+  const stale = !isLive(d);
+  const nodes = [
+    el("div", { class: "detail-head" },
+      el("h2", { class: "mono" }, d.id),
+      d.verdict ? badge(d.verdict) : badge("none", "none")),
+    el("div", { class: "sub" }, `${d.device}, allowed ${rangeText(d)}`),
+    el("div", { class: `now ${tempClass(d)}` }, d.latest ? fmtC(d.latest.celsius) : "--"),
+    el("div", { class: "sub" }, d.latest
+      ? (stale ? `Last known reading at ${fmtTime(d.latest.time)}: ${!d.phone_online ? "phone offline" : "sensor not connected"}` : `Live, read at ${fmtTime(d.latest.time)}`)
+      : "No readings yet"),
+    chart(d),
+  ];
+  if (r) {
+    nodes.push(el("div", { class: "stats" },
+      stat("Min", fmtC(r.min_c)), stat("Max", fmtC(r.max_c)), stat("Mean kinetic temp.", fmtC(r.mean_kinetic_c)),
+      stat("Out of range", fmtDuration(r.time_out_of_range_s)), stat("Alarms", r.alarms),
+      stat("Data gaps", r.gaps.length ? `${r.gaps.length} (${fmtDuration(r.gaps.reduce((t, g) => t + (Date.parse(g.end) - Date.parse(g.start)) / 1000, 0))})` : "none")));
+    if (r.excursions.length) {
+      nodes.push(el("h2", {}, "Excursions"));
+      nodes.push(el("ul", { class: "excursions" }, ...r.excursions.slice(-8).reverse().map(e =>
+        el("li", {}, `${fmtClock(e.start)} to ${fmtClock(e.end)}: ${e.direction === "TOO_WARM" ? "too warm" : "too cold"}, ` +
+          `peak ${fmtC(e.peak_c)}, ${fmtDuration((Date.parse(e.end) - Date.parse(e.start)) / 1000)}`))));
+    }
+  }
+  nodes.push(el("div", { class: "note" }, "Verdict as calculated on the phone: an alarm after more than 15 minutes out of range; " +
+    "more than 10 minutes without readings makes a shipment incomplete."));
+  box.replaceChildren(...nodes);
+}
+
+function setStatus(ok, text) {
+  document.getElementById("status").className = ok ? "" : "error";
+  document.getElementById("status-text").textContent = text;
+}
+
+async function refresh() {
+  try {
+    const ships = await (await fetch("/api/shipments")).json();
+    if (!ships.some(s => s.id === selected)) selected = ships.length ? ships[0].id : null;
+    renderKpis(ships);
+    renderTable(ships);
+    let detail = null;
+    if (selected) {
+      const res = await fetch(`/api/shipments/${encodeURIComponent(selected)}?limit=240`);
+      if (res.ok) detail = await res.json();
+    }
+    renderDetail(detail);
+    setStatus(true, `Updated ${new Date().toLocaleTimeString()}`);
+  } catch (e) {
+    setStatus(false, "Server unreachable, retrying");
+  }
+}
+
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>
