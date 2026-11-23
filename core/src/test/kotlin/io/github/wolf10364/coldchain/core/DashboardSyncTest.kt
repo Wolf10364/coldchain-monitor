@@ -133,4 +133,27 @@ class DashboardSyncTest {
         assertEquals(JsonNull, server.received.single()["range_min_c"])
         assertEquals(-18.0, server.received.single()["range_max_c"]!!.jsonPrimitive.content.toDouble())
     }
+
+    @Test
+    fun `warehouse checks reach the dashboard, and only when they change`() = runTest {
+        val server = FakeServer()
+        val sync = sync(server)
+        sync.add(0)
+        sync.flush()
+        assertEquals(JsonNull, server.received.single()["handling"])
+
+        val received = WarehouseFlow(analyzer).receive(Handling(), listOf(reading(0)), now = reading(0).time)
+        sync.onHandling(received)
+        sync.flush()
+        sync.onHandling(received.copy()) // equal: nothing new to send
+        sync.flush()
+
+        assertEquals(2, server.received.size)
+        val handling = server.received.last()["handling"]!!.jsonObject
+        assertEquals("RECEIVED", handling["stage"]!!.jsonPrimitive.content)
+        val receipt = handling["receipt"]!!.jsonObject
+        assertEquals("ACCEPT", receipt["decision"]!!.jsonPrimitive.content)
+        assertEquals(4.0, receipt["arrival_c"]!!.jsonPrimitive.content.toDouble())
+        assertEquals(JsonNull, handling["picking"])
+    }
 }

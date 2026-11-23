@@ -20,14 +20,18 @@ sealed interface SensorEvent {
  */
 interface SensorSource {
     fun events(): Flow<SensorEvent>
+
+    /** The current time in the sensor's timeline. A real sensor uses the clock; the simulator runs faster. */
+    fun now(): Instant = Instant.now()
 }
 
 /**
  * Live readings from a [FridgeModel], one every [tickMillis] of real time, each stamped [simulatedStep] later
  * than the last (by default one simulated minute per real second, so a demo shows an hour in a minute).
  *
- * [doorOpen] and [linkUp] are switches the UI can flip to cause an excursion or a lost connection on purpose.
- * Collect [events] once: the model's state is shared.
+ * [doorOpen] and [linkUp] are switches the UI can flip to cause an excursion or a lost connection on purpose;
+ * [picking] takes the goods out of the cold room, where they warm slowly. Collect [events] once: the model's
+ * state is shared.
  */
 class SimulatedSensorSource(
     private val model: FridgeModel = FridgeModel(),
@@ -37,6 +41,16 @@ class SimulatedSensorSource(
 ) : SensorSource {
     val doorOpen = MutableStateFlow(false)
     val linkUp = MutableStateFlow(true)
+    val picking = MutableStateFlow(false)
+
+    @Volatile
+    private var current: Instant = start
+
+    /** The simulated time of the latest step, whether or not its reading reached the phone. */
+    override fun now(): Instant = current
+
+    /** Cools the goods back to the set point, for example when a new shipment starts. */
+    fun resetFridge() = model.reset()
 
     override fun events(): Flow<SensorEvent> = flow {
         emit(SensorEvent.Connection(ConnectionState.SCANNING))
@@ -46,14 +60,20 @@ class SimulatedSensorSource(
         var step = 0L
         while (true) {
             // The fridge keeps warming or cooling while the link is down; the phone just doesn't hear about it.
-            val celsius = model.step(doorOpen.value)
+            val exposure = when {
+                doorOpen.value -> Exposure.DOOR_OPEN
+                picking.value -> Exposure.PICKING
+                else -> Exposure.COLD
+            }
+            val celsius = model.step(exposure)
+            current = start.plus(simulatedStep.multipliedBy(step))
             if (linkUp.value) {
                 if (!connected) {
                     emit(SensorEvent.Connection(ConnectionState.RECONNECTING))
                     emit(SensorEvent.Connection(ConnectionState.CONNECTED))
                     connected = true
                 }
-                emit(SensorEvent.NewReading(Reading(start.plus(simulatedStep.multipliedBy(step)), celsius)))
+                emit(SensorEvent.NewReading(Reading(current, celsius)))
             } else if (connected) {
                 emit(SensorEvent.Connection(ConnectionState.LOST))
                 connected = false

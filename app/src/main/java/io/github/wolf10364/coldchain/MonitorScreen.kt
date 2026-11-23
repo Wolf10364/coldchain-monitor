@@ -12,8 +12,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -33,13 +36,21 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.wolf10364.coldchain.core.ConnectionState
 import io.github.wolf10364.coldchain.core.FridgeModel
+import io.github.wolf10364.coldchain.core.Handling
+import io.github.wolf10364.coldchain.core.PickStatus
+import io.github.wolf10364.coldchain.core.PickingCheck
+import io.github.wolf10364.coldchain.core.PickingRules
 import io.github.wolf10364.coldchain.core.Reading
+import io.github.wolf10364.coldchain.core.ReceiptCheck
+import io.github.wolf10364.coldchain.core.ReceiptDecision
 import io.github.wolf10364.coldchain.core.ShipmentAnalyzer
 import io.github.wolf10364.coldchain.core.ShipmentReport
 import io.github.wolf10364.coldchain.core.SimEvent
+import io.github.wolf10364.coldchain.core.Stage
 import io.github.wolf10364.coldchain.core.SyncStatus
 import io.github.wolf10364.coldchain.core.TemperatureRange
 import io.github.wolf10364.coldchain.core.Verdict
+import io.github.wolf10364.coldchain.core.WarehouseFlow
 import io.github.wolf10364.coldchain.core.simulate
 import java.time.Duration
 import java.time.Instant
@@ -56,15 +67,31 @@ private const val CHART_POINTS = 120 // last two simulated hours
 @Composable
 fun MonitorScreen(viewModel: MonitorViewModel = viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    MonitorContent(state, onDoorChange = viewModel::setDoorOpen, onLinkChange = viewModel::setLinkUp)
+    MonitorContent(
+        state,
+        MonitorActions(
+            onDoorChange = viewModel::setDoorOpen,
+            onLinkChange = viewModel::setLinkUp,
+            onReceive = viewModel::receive,
+            onStartPicking = viewModel::startPicking,
+            onPack = viewModel::pack,
+            onNewShipment = viewModel::newShipment,
+        ),
+    )
 }
 
+/** Everything the user can do on the screen. */
+data class MonitorActions(
+    val onDoorChange: (Boolean) -> Unit = {},
+    val onLinkChange: (Boolean) -> Unit = {},
+    val onReceive: () -> Unit = {},
+    val onStartPicking: () -> Unit = {},
+    val onPack: () -> Unit = {},
+    val onNewShipment: () -> Unit = {},
+)
+
 @Composable
-fun MonitorContent(
-    state: MonitorUiState,
-    onDoorChange: (Boolean) -> Unit,
-    onLinkChange: (Boolean) -> Unit,
-) {
+fun MonitorContent(state: MonitorUiState, actions: MonitorActions) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -83,9 +110,70 @@ fun MonitorContent(
             modifier = Modifier.fillMaxWidth().height(160.dp),
         )
         state.report?.let { ReportCard(it) }
+        WarehouseCard(state.handling, actions)
         DashboardStatus(state.sync)
-        DemoControls(state, onDoorChange, onLinkChange)
+        DemoControls(state, actions)
     }
+}
+
+@Composable
+private fun WarehouseCard(handling: Handling, actions: MonitorActions) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Warehouse checks", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            handling.receipt?.let { ReceiptSection(it) }
+            when (handling.stage) {
+                Stage.IN_TRANSIT -> {
+                    Text("In transit. When the shipment is scanned in at the dock, the receipt check runs on its own: no probe thermometer needed.")
+                    Button(onClick = actions.onReceive) { Text("Scan in at the dock") }
+                }
+                Stage.RECEIVED -> when (handling.receipt?.decision) {
+                    ReceiptDecision.ACCEPT -> {
+                        Text("Stored in the cold room. Picking may take the goods out of the cold for up to ${formatDuration(PickingRules.DEFAULT_MAX_OUT_OF_COLD)}.")
+                        Button(onClick = actions.onStartPicking) { Text("Start picking") }
+                    }
+                    ReceiptDecision.QUARANTINE -> Text("Picking blocked until quality releases the goods.", color = Grey)
+                    else -> Text("Picking blocked: the delivery is refused.", color = Grey)
+                }
+                Stage.PICKING -> {
+                    handling.picking?.let { PickingSection(it) }
+                    Button(onClick = actions.onPack) { Text("Packed into a cool box") }
+                }
+                Stage.PACKED -> handling.picking?.let { PickingSection(it) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReceiptSection(receipt: ReceiptCheck) {
+    val (label, color) = when (receipt.decision) {
+        ReceiptDecision.ACCEPT -> "Goods receipt: ACCEPTED" to Green
+        ReceiptDecision.QUARANTINE -> "Goods receipt: QUARANTINE, quality decides" to Amber
+        ReceiptDecision.REJECT -> "Goods receipt: REJECTED, refuse the delivery" to Red
+    }
+    Text(label, color = color, fontWeight = FontWeight.Bold)
+    receipt.reasons.forEach { Text("\u2022 $it") }
+}
+
+@Composable
+private fun PickingSection(picking: PickingCheck) {
+    val share = picking.outOfCold.seconds.toFloat() / picking.limit.seconds.coerceAtLeast(1)
+    val running = picking.end == null
+    val (label, color) = when (picking.status) {
+        PickStatus.WITHIN_LIMITS ->
+            "Picking: ${formatDuration(picking.outOfCold)} of ${formatDuration(picking.limit)} out of the cold" to
+                (if (share > 0.75f) Amber else Green)
+        PickStatus.PASSED -> "Picking: PASSED" to Green
+        PickStatus.FAILED ->
+            (if (running) "Picking: limit broken, return the goods to the cold room" else "Picking: FAILED") to Red
+    }
+    Text(label, color = color, fontWeight = FontWeight.Bold)
+    if (running) {
+        LinearProgressIndicator(progress = { share.coerceIn(0f, 1f) }, color = color, modifier = Modifier.fillMaxWidth())
+        picking.maxC?.let { Text("Warmest reading so far: ${formatC(it)}") }
+    }
+    picking.reasons.forEach { Text("\u2022 $it") }
 }
 
 @Composable
@@ -188,11 +276,12 @@ private fun ReportCard(report: ShipmentReport) {
 }
 
 @Composable
-private fun DemoControls(state: MonitorUiState, onDoorChange: (Boolean) -> Unit, onLinkChange: (Boolean) -> Unit) {
+private fun DemoControls(state: MonitorUiState, actions: MonitorActions) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text("Demo: simulated sensor, 1 second = 1 minute", style = MaterialTheme.typography.titleSmall)
-        LabeledSwitch("Fridge door open", state.doorOpen, onDoorChange)
-        LabeledSwitch("Sensor within reach", state.linkUp, onLinkChange)
+        LabeledSwitch("Fridge door open", state.doorOpen, actions.onDoorChange)
+        LabeledSwitch("Sensor within reach", state.linkUp, actions.onLinkChange)
+        OutlinedButton(onClick = actions.onNewShipment, modifier = Modifier.fillMaxWidth()) { Text("Start a new shipment") }
     }
 }
 
@@ -224,13 +313,18 @@ private fun MonitorPreview() {
     val readings = FridgeModel(random = Random(1)).simulate(
         start = Instant.parse("2026-11-23T08:00:00Z"),
         interval = Duration.ofMinutes(1),
-        steps = 90,
-        events = listOf(SimEvent.DoorOpen(fromStep = 30, steps = 25)),
+        steps = 75,
+        events = listOf(SimEvent.Picking(fromStep = 60, steps = 15)),
     )
+    val analyzer = ShipmentAnalyzer(TemperatureRange.CHILLED)
+    val flow = WarehouseFlow(analyzer)
+    val received = flow.receive(Handling(), readings.take(60), readings[59].time)
+    val picking = flow.refresh(flow.startPicking(received, readings.take(60), readings[59].time), readings, readings.last().time)
     val state = MonitorUiState(
         connection = ConnectionState.CONNECTED,
         readings = readings,
-        report = ShipmentAnalyzer(TemperatureRange.CHILLED).analyze(readings),
+        report = analyzer.analyze(readings),
+        handling = picking,
     )
-    MaterialTheme { MonitorContent(state, onDoorChange = {}, onLinkChange = {}) }
+    MaterialTheme { MonitorContent(state, MonitorActions()) }
 }

@@ -27,7 +27,7 @@ data class SyncStatus(val waiting: Int = 0, val lastAttemptOk: Boolean? = null)
  * Not thread-safe: call it from one thread (the app uses the main thread).
  */
 class DashboardSync(
-    private val shipmentId: String,
+    val shipmentId: String,
     private val device: String,
     private val range: TemperatureRange,
     private val uploader: Uploader,
@@ -37,6 +37,7 @@ class DashboardSync(
     private val pending = ArrayDeque<Reading>()
     private var connection = ConnectionState.SCANNING
     private var report: ShipmentReport? = null
+    private var handling: Handling? = null
     private var changes = 1L // starts "dirty" so the server hears about the shipment straight away
     private var sentChanges = 0L
 
@@ -58,6 +59,12 @@ class DashboardSync(
         changes++
     }
 
+    fun onHandling(latest: Handling) {
+        if (latest == handling) return
+        handling = latest
+        changes++
+    }
+
     /** Sends up to [maxBatch] waiting readings plus the latest state. Returns false if the upload failed. */
     suspend fun flush(): Boolean {
         if (pending.isEmpty() && changes == sentChanges) return true
@@ -71,6 +78,7 @@ class DashboardSync(
                 connection = connection.name,
                 readings = batch.map { ReadingDto(it.time.toString(), it.celsius) },
                 report = report?.toDto(),
+                handling = handling?.toDto(),
             ),
         )
         val ok = try {
@@ -129,6 +137,41 @@ internal data class UploadDto(
     val connection: String,
     val readings: List<ReadingDto>,
     val report: ReportDto?,
+    val handling: HandlingDto?,
+)
+
+@Serializable
+internal data class ReceiptDto(
+    val decision: String,
+    val at: String,
+    @SerialName("arrival_c") val arrivalC: Double?,
+    @SerialName("transport_verdict") val transportVerdict: String?,
+    val reasons: List<String>,
+)
+
+@Serializable
+internal data class PickingDto(
+    val start: String,
+    val end: String?,
+    @SerialName("out_of_cold_s") val outOfColdS: Long,
+    @SerialName("limit_s") val limitS: Long,
+    @SerialName("max_c") val maxC: Double?,
+    val status: String,
+    val reasons: List<String>,
+)
+
+@Serializable
+internal data class HandlingDto(val stage: String, val receipt: ReceiptDto?, val picking: PickingDto?)
+
+internal fun Handling.toDto() = HandlingDto(
+    stage = stage.name,
+    receipt = receipt?.let {
+        ReceiptDto(it.decision.name, it.at.toString(), it.arrivalC, it.transportVerdict?.name, it.reasons)
+    },
+    picking = picking?.let {
+        PickingDto(it.start.toString(), it.end?.toString(), it.outOfCold.seconds, it.limit.seconds, it.maxC,
+            it.status.name, it.reasons)
+    },
 )
 
 internal fun ShipmentReport.toDto() = ReportDto(

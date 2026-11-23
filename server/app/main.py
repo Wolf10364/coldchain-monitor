@@ -1,7 +1,8 @@
 """ColdChain Monitor dashboard server.
 
-The phone uploads readings and its own verdict; this server stores them and serves the dashboard.
-The shipment rules live only in the Kotlin core, so the server never second-guesses the verdict.
+The phone uploads readings, its own verdict and the warehouse checks (goods receipt, picking); this server
+stores them and serves the dashboard. The rules live only in the Kotlin core, so the server never
+second-guesses a decision.
 
 Run (from the server/ folder):  uvicorn app.main:create_app --factory --port 8000
 Then open http://localhost:8000. Set DATABASE_URL to use another database than the local SQLite file.
@@ -64,6 +65,8 @@ def create_app(database_url: str | None = None, clock: Callable[[], datetime] = 
         ship.last_seen = now
         if body.report is not None:
             ship.report_json = body.report.model_dump_json()
+        if body.handling is not None:
+            ship.handling_json = body.handling.model_dump_json()
 
         # The phone retries failed uploads, so the same reading can arrive twice: store it once.
         times = [to_naive_utc(r.time) for r in body.readings]
@@ -99,6 +102,7 @@ def create_app(database_url: str | None = None, clock: Callable[[], datetime] = 
             "latest": {"time": iso(latest.time), "celsius": latest.celsius} if latest else None,
             "verdict": report["verdict"] if report else None,
             "report": report,
+            "handling": json.loads(ship.handling_json) if ship.handling_json else None,
         }
 
     @app.get("/api/shipments")

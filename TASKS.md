@@ -11,6 +11,9 @@
 - [x] Checked on an emulator (Pixel 9 Pro XL): pass, door left open (fail), sensor dropout (incomplete)
 - [x] Dashboard: FastAPI + SQLite server, live web page, upload queue on the phone that survives a dead network
 - [x] Checked with two emulators reporting at once: one passing, one failing after the door was left open
+- [x] Goods receipt check at the dock: accept, quarantine or reject from the arrival temperature and the trip
+- [x] Picking check: live timer (20 min out of the cold), temperature limit, blocked unless the receipt was accepted
+- [x] New shipment button; earlier shipments keep uploading until the server has all their readings
 - [x] GitHub Actions: tests and app build on every push
 
 ## Next: show it working (first weekend)
@@ -35,6 +38,9 @@
 ## Later
 
 - [ ] Save shipments on the phone (Room), so waiting uploads also survive an app restart
+- [ ] Trigger goods receipt from a real scan of the shipment label (CameraX + ML Kit barcode scanning)
+- [ ] Quality release for quarantined goods, with who released them and why
+- [ ] Limits per product (for example frozen goods: 10 min out of the cold)
 - [ ] Deploy the dashboard server (for example a small cloud VM or Render) with HTTPS and an API key per phone
 - [ ] Optional: sync to Firebase (Firestore) instead of or next to the own server
 - [ ] Share a shipment report (text or PDF)

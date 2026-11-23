@@ -65,4 +65,34 @@ class SimulatedSensorSourceTest {
 
         assertTrue(readings.last() > 8.0, "after 20 minutes with the door open it should be above 8 °C: ${readings.last()}")
     }
+
+    @Test
+    fun `the simulated clock keeps running while the link is down`() = runTest {
+        val source = source()
+        backgroundScope.launch { source.events().collect {} }
+
+        advanceTimeBy(3_500) // minutes 0-2
+        assertEquals(t0.plus(Duration.ofMinutes(2)), source.now())
+        source.linkUp.value = false
+        advanceTimeBy(5_000) // minutes 3-7, unheard
+        assertEquals(t0.plus(Duration.ofMinutes(7)), source.now())
+    }
+
+    @Test
+    fun `picked goods warm, and a reset cools them again`() = runTest {
+        val source = source()
+        val readings = mutableListOf<Double>()
+        backgroundScope.launch {
+            source.events().collect { if (it is SensorEvent.NewReading) readings += it.reading.celsius }
+        }
+
+        source.picking.value = true
+        advanceTimeBy(15_500)
+        assertTrue(readings.last() in 6.0..8.0, "15 minutes of picking should warm the goods a little: ${readings.last()}")
+
+        source.picking.value = false
+        source.resetFridge()
+        advanceTimeBy(1_000)
+        assertTrue(readings.last() < 4.5, "after a reset the goods are at the set point again: ${readings.last()}")
+    }
 }

@@ -116,3 +116,62 @@ def test_dashboard_page_is_served(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "ColdChain" in r.text
+
+
+def handling(stage="RECEIVED", decision="ACCEPT", picking=None):
+    return {
+        "stage": stage,
+        "receipt": {
+            "decision": decision, "at": "2026-11-23T08:30:00Z", "arrival_c": 4.1, "transport_verdict": "PASS",
+            "reasons": ["Arrived at 4.1 °C", "Stayed 2.0 to 8.0 °C for the whole trip"],
+        },
+        "picking": picking,
+    }
+
+
+def test_warehouse_checks_are_stored_and_shown(client):
+    picking = {"start": "2026-11-23T08:40:00Z", "end": None, "out_of_cold_s": 420, "limit_s": 1200,
+               "max_c": 5.2, "status": "WITHIN_LIMITS", "reasons": []}
+    body = upload([0, 1]) | {"handling": handling("PICKING", picking=picking)}
+    assert client.post("/api/shipments/SHP-1/upload", json=body).status_code == 200
+
+    h = client.get("/api/shipments").json()[0]["handling"]
+    assert h["stage"] == "PICKING"
+    assert h["receipt"]["decision"] == "ACCEPT"
+    assert h["picking"]["out_of_cold_s"] == 420
+    assert client.get("/api/shipments/SHP-1").json()["handling"] == h
+
+
+def test_upload_without_warehouse_checks_keeps_the_last_ones(client):
+    client.post("/api/shipments/SHP-1/upload", json=upload([0]) | {"handling": handling(decision="QUARANTINE")})
+    client.post("/api/shipments/SHP-1/upload", json=upload([1]))
+    assert client.get("/api/shipments/SHP-1").json()["handling"]["receipt"]["decision"] == "QUARANTINE"
+
+
+def test_shipment_without_warehouse_checks_shows_none(client):
+    client.post("/api/shipments/SHP-1/upload", json=upload([0]))
+    assert client.get("/api/shipments/SHP-1").json()["handling"] is None
+
+
+def test_unknown_receipt_decision_is_refused(client):
+    body = upload([0]) | {"handling": handling(decision="MAYBE")}
+    assert client.post("/api/shipments/SHP-1/upload", json=body).status_code == 422
+
+
+def test_database_from_before_the_warehouse_checks_is_upgraded(tmp_path, clock):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE shipments (id VARCHAR(64) PRIMARY KEY, device VARCHAR(120), range_min_c FLOAT, "
+                "range_max_c FLOAT, connection VARCHAR(20), report_json TEXT, created_at DATETIME, last_seen DATETIME)")
+    con.execute("INSERT INTO shipments VALUES ('OLD-1', 'Old phone', 2.0, 8.0, 'CONNECTED', NULL, "
+                "'2026-11-23 07:00:00', '2026-11-23 07:00:00')")
+    con.commit()
+    con.close()
+
+    client = TestClient(create_app(f"sqlite:///{path}", clock=clock))
+    assert client.get("/api/shipments/OLD-1").json()["handling"] is None
+    body = upload([0]) | {"handling": handling()}
+    assert client.post("/api/shipments/OLD-1/upload", json=body).status_code == 200
+    assert client.get("/api/shipments/OLD-1").json()["handling"]["stage"] == "RECEIVED"
